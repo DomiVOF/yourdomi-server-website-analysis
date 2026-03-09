@@ -18,25 +18,43 @@ async function mondayQuery(apiKey, query, variables = {}) {
   return data.data;
 }
 
+async function getBoardColumns(apiKey, boardId) {
+  const data = await mondayQuery(apiKey, `query($bid: [ID!]) { boards(ids: $bid) { columns { id title type } } }`, { bid: [boardId] });
+  const map = {};
+  for (const c of data.boards[0]?.columns || []) map[c.title.toLowerCase()] = c;
+  return map;
+}
+
+async function findBoardByName(apiKey, nameFragment) {
+  const data = await mondayQuery(apiKey, `query { boards(limit: 100, board_kind: public) { id name type } }`);
+  return data.boards.find(b =>
+    b.name.toLowerCase().includes(nameFragment.toLowerCase()) &&
+    b.type !== 'sub_items_board'
+  ) || null;
+}
+
+async function getFirstGroup(apiKey, boardId) {
+  const data = await mondayQuery(apiKey, `query($bid: [ID!]) { boards(ids: $bid) { groups { id title } } }`, { bid: [boardId] });
+  return data.boards[0]?.groups?.[0] || null;
+}
+
 async function enrichWithClaude(anthropicKey, payload) {
   if (!anthropicKey) return {};
   const { naam, adres, gemeente, type, kamers, slaapplaatsen, startmaand, extraInfo, scenarios, jaar1Total, jaar2Total } = payload;
   const prompt = `Je bent een CRM assistent voor YourDomi, een Belgisch short-term rental beheer bedrijf.
-Een potentiële eigenaar heeft een rentabiliteitsanalyse aangevraagd via de website.
 
-LEAD:
-- Naam: ${naam}, Adres: ${adres}, ${gemeente}
-- Type: ${type}, Kamers: ${kamers}, Slaapplaatsen: ${slaapplaatsen}, Start: ${startmaand}
-- Extra: ${extraInfo || 'geen'}
+LEAD: Naam: ${naam}, Adres: ${adres}, ${gemeente}
+Type: ${type}, Kamers: ${kamers}, Slaapplaatsen: ${slaapplaatsen}, Start: ${startmaand}
+Extra: ${extraInfo || 'geen'}
 
 OMZET:
 - Conservatief: €${scenarios?.conservatief?.maand}/maand
-- Realistisch: €${scenarios?.realistisch?.maand}/maand
+- Realistisch: €${scenarios?.realistisch?.maand}/maand  
 - Optimaal: €${scenarios?.optimaal?.maand}/maand
 - Jaar 1: €${jaar1Total}, Jaar 2: €${jaar2Total}
 
-Geef ALLEEN dit JSON terug (geen uitleg):
-{"deal_naam":"korte naam bijv Appartement Knokke 2slpk","verwachte_commissie":0,"notities":"2-3 zinnen voor sales team","stad_regio":"stad of regio"}`;
+Geef ALLEEN dit JSON (geen uitleg):
+{"deal_naam":"korte naam bijv Appartement Knokke 2slpk","verwachte_commissie":0,"notities":"2-3 zinnen voor sales team","stad_regio":"genormaliseerde stad of regio"}`;
 
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -51,20 +69,6 @@ Geef ALLEEN dit JSON terug (geen uitleg):
     console.error('Claude enrichment failed:', e.message);
     return {};
   }
-}
-
-async function getBoardColumns(apiKey, boardId) {
-  const data = await mondayQuery(apiKey, `query($bid: [ID!]) { boards(ids: $bid) { columns { id title type } } }`, { bid: [boardId] });
-  const map = {};
-  for (const c of data.boards[0]?.columns || []) map[c.title.toLowerCase()] = c;
-  return map;
-}
-
-async function ensureColumn(apiKey, boardId, title, columnType) {
-  try {
-    const data = await mondayQuery(apiKey, `mutation($boardId: ID!, $title: String!, $type: ColumnType!) { create_column(board_id: $boardId, title: $title, column_type: $type) { id } }`, { boardId, title, type: columnType });
-    return data.create_column.id;
-  } catch (e) { console.log(`Column "${title}" skip:`, e.message); }
 }
 
 export async function generateReportPDF(payload) {
@@ -128,116 +132,96 @@ async function uploadFileToItem(apiKey, itemId, columnId, filename, buffer) {
   return data;
 }
 
-// Create contact in Monday CRM Contacts board and return its ID
-async function createContact(apiKey, naam, telefoon, email) {
+// Step 1: Create contact in Contacts board — returns contact item ID
+async function createContact(apiKey, naam, telefoon, email, gemeente, adres, stadRegio) {
   try {
-    const boardsData = await mondayQuery(apiKey, `query { boards(limit: 50, board_kind: public) { id name type } }`);
-    const contactsBoard = boardsData.boards.find(b =>
-      b.name.toLowerCase().includes('contact') && b.type !== 'sub_items_board'
-    );
-    if (!contactsBoard) { console.log('No Contacts board found'); return null; }
-    console.log('Contacts board:', contactsBoard.name, contactsBoard.id);
+    const board = await findBoardByName(apiKey, 'contact');
+    if (!board) { console.log('No Contacts board found'); return null; }
+    console.log('Contacts board:', board.name, board.id);
 
-    const cColMap = await getBoardColumns(apiKey, contactsBoard.id);
-    console.log('Contacts columns:', Object.keys(cColMap));
+    const colMap = await getBoardColumns(apiKey, board.id);
+    console.log('Contacts columns:', Object.keys(colMap));
 
     const cv = {};
-    const phoneCol = cColMap['phone'] || cColMap['telefoon'];
-    const emailCol = cColMap['email'] || cColMap['e-mail'];
+    const phoneCol = colMap['phone'] || colMap['telefoon'];
+    const emailCol = colMap['email'] || colMap['e-mail'];
+    const leadSourceCol = colMap['lead source'] || colMap['lead bron'] || colMap['bron'];
+    const gemeenteCol = colMap['hoofdgemeente'] || colMap['gemeente'] || colMap['headquarters location'];
+    const adresCol = colMap['adres'] || colMap['address'];
+
     if (phoneCol && telefoon) cv[phoneCol.id] = { phone: telefoon, countryShortName: 'BE' };
     if (emailCol && email)    cv[emailCol.id] = { email, text: email };
+    if (leadSourceCol)        cv[leadSourceCol.id] = { label: 'Website' };
+    if (gemeenteCol)          cv[gemeenteCol.id] = String(stadRegio || gemeente || '');
+    if (adresCol)             cv[adresCol.id] = String(adres || '');
 
-    const gData = await mondayQuery(apiKey, `query($bid: [ID!]) { boards(ids: $bid) { groups { id } } }`, { bid: [contactsBoard.id] });
-    const firstGroup = gData.boards[0]?.groups?.[0];
-    if (!firstGroup) { console.log('No groups in contacts board'); return null; }
+    const group = await getFirstGroup(apiKey, board.id);
+    if (!group) { console.log('No group in Contacts board'); return null; }
 
     const res = await mondayQuery(apiKey, `
       mutation($boardId: ID!, $groupId: String!, $name: String!, $cv: JSON!) {
         create_item(board_id: $boardId, group_id: $groupId, item_name: $name, column_values: $cv) { id }
       }
-    `, { boardId: contactsBoard.id, groupId: firstGroup.id, name: naam || 'Onbekend', cv: JSON.stringify(cv) });
+    `, { boardId: board.id, groupId: group.id, name: naam || 'Onbekend', cv: JSON.stringify(cv) });
 
-    console.log('Contact created:', res.create_item.id);
-    return res.create_item.id;
+    const contactId = res.create_item.id;
+    console.log('Contact created:', contactId, naam);
+    return { contactId, contactsBoardId: board.id };
   } catch (e) {
     console.error('Contact creation failed (non-fatal):', e.message);
     return null;
   }
 }
 
+// Step 2: Create lead in Leads board and link the contact
 export async function createMondayLead(mondayKey, anthropicKey, payload) {
   const { naam, email, telefoon, adres, gemeente, type, kamers, slaapplaatsen, startmaand, extraInfo, datum, scenarios, jaar1Total, jaar2Total } = payload;
 
-  const boardId = process.env.MONDAY_BOARD_ID;
-  if (!boardId) throw new Error('MONDAY_BOARD_ID env var not set in Railway');
+  // Use explicit MONDAY_LEADS_BOARD_ID if set, otherwise search by name
+  const boardId = process.env.MONDAY_LEADS_BOARD_ID
+    || await findBoardByName(mondayKey, 'lead').then(b => b?.id);
 
-  // Run enrichment + group fetch in parallel
-  const [enriched, groupData] = await Promise.all([
+  if (!boardId) throw new Error('No Leads board found. Set MONDAY_LEADS_BOARD_ID env var in Railway.');
+  console.log('Using Leads board:', boardId);
+
+  // Enrich with Claude in parallel with column fetch
+  const [enriched, colMap, group] = await Promise.all([
     anthropicKey ? enrichWithClaude(anthropicKey, payload) : Promise.resolve({}),
-    mondayQuery(mondayKey, `query($bid: [ID!]) { boards(ids: $bid) { groups { id title } } }`, { bid: [boardId] })
+    getBoardColumns(mondayKey, boardId),
+    getFirstGroup(mondayKey, boardId)
   ]);
+
   console.log('Claude enrichment:', enriched);
+  console.log('Leads board columns:', Object.keys(colMap));
 
-  const groups = groupData.boards[0]?.groups || [];
-  const group = groups.find(g =>
-    g.title.toLowerCase().includes('new lead') ||
-    g.title.toLowerCase().includes('incoming') ||
-    g.title.toLowerCase().includes('new - to be')
-  ) || groups[0];
-  if (!group) throw new Error('No group found in board');
-
-  // Ensure columns exist
-  let colMap = await getBoardColumns(mondayKey, boardId);
-  console.log('Deal board columns:', Object.keys(colMap));
-
-  for (const col of [
-    { title: 'Adres',              type: 'text' },
-    { title: 'Slaapplaatsen',      type: 'numbers' },
-    { title: 'Startmaand',         type: 'text' },
-    { title: 'Extra info',         type: 'long_text' },
-    { title: 'Omzet conservatief', type: 'numbers' },
-    { title: 'Omzet realistisch',  type: 'numbers' },
-    { title: 'Omzet optimaal',     type: 'numbers' },
-    { title: 'Jaar 1 omzet',       type: 'numbers' },
-    { title: 'Jaar 2 prognose',    type: 'numbers' },
-    { title: 'Datum aanvraag',     type: 'date' },
-    { title: 'AI notities',        type: 'long_text' },
-  ]) { if (!colMap[col.title.toLowerCase()]) await ensureColumn(mondayKey, boardId, col.title, col.type); }
-
-  colMap = await getBoardColumns(mondayKey, boardId);
+  if (!group) throw new Error('No group found in Leads board');
 
   const today = datum ? new Date(datum).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
   const cv = {};
 
-  const setText  = (t, v) => { const c = colMap[t.toLowerCase()]; if (c && v) cv[c.id] = String(v); };
-  const setNum   = (t, v) => { const c = colMap[t.toLowerCase()]; if (c && v != null) cv[c.id] = Number(v); };
   const setLabel = (t, v) => { const c = colMap[t.toLowerCase()]; if (c && v) cv[c.id] = { label: String(v) }; };
   const setLong  = (t, v) => { const c = colMap[t.toLowerCase()]; if (c && v) cv[c.id] = { text: String(v) }; };
+  const setText  = (t, v) => { const c = colMap[t.toLowerCase()]; if (c && v) cv[c.id] = String(v); };
 
-  setText('Adres', adres);
-  setNum('Slaapplaatsen', slaapplaatsen);
-  setText('Startmaand', startmaand);
-  setLong('Extra info', extraInfo);
-  setLong('AI notities', enriched.notities);
-  if (colMap['datum aanvraag']) cv[colMap['datum aanvraag'].id] = { date: today };
-  if (colMap['lead source'])    cv[colMap['lead source'].id]    = { label: 'Website' };
-  if (colMap['aantal kamers'] && kamers) cv[colMap['aantal kamers'].id] = Number(kamers);
-  if (colMap['type'])   setLabel('Type', 'Beheer');
-  if (colMap['stage'])  setLabel('Stage', 'New / Meeting Planned');
-  if (enriched.verwachte_commissie && colMap['commission']) cv[colMap['commission'].id] = Number(enriched.verwachte_commissie);
+  // Status = New Lead
+  const statusCol = colMap['status'];
+  if (statusCol) cv[statusCol.id] = { label: 'New Lead' };
 
-  // Headquarters location = gemeente/regio
-  const hqCol = colMap['headquarters location'] || colMap['locatie'] || colMap['gemeente'];
-  if (hqCol) cv[hqCol.id] = String(enriched.stad_regio || gemeente || '');
+  // Lead source = Website
+  const leadSourceCol = colMap['lead source'] || colMap['bron'];
+  if (leadSourceCol) cv[leadSourceCol.id] = { label: 'Website' };
 
-  setNum('Omzet conservatief', scenarios?.conservatief?.maand);
-  setNum('Omzet realistisch',  scenarios?.realistisch?.maand);
-  setNum('Omzet optimaal',     scenarios?.optimaal?.maand);
-  setNum('Jaar 1 omzet',       jaar1Total);
-  setNum('Jaar 2 prognose',    jaar2Total);
+  // AI notes
+  setLong('ai notities', enriched.notities);
+  setText('adres', adres);
 
+  const gemeenteCol = colMap['hoofdgemeente'] || colMap['gemeente'];
+  if (gemeenteCol) cv[gemeenteCol.id] = String(enriched.stad_regio || gemeente || '');
+
+  // Item name = Claude deal name or fallback
   const itemName = enriched.deal_naam || `${naam || 'Lead'} — ${adres || gemeente || ''}`.trim();
 
+  // Create lead item
   const created = await mondayQuery(mondayKey, `
     mutation($boardId: ID!, $groupId: String!, $itemName: String!, $cv: JSON!) {
       create_item(board_id: $boardId, group_id: $groupId, item_name: $itemName, column_values: $cv) { id }
@@ -245,37 +229,40 @@ export async function createMondayLead(mondayKey, anthropicKey, payload) {
   `, { boardId, groupId: group.id, itemName, cv: JSON.stringify(cv) });
 
   const itemId = created.create_item.id;
-  console.log('Monday item created:', itemId, '—', itemName);
+  console.log('Lead created:', itemId, '—', itemName);
 
-  // Create contact and link to deal
-  const contactId = await createContact(mondayKey, naam, telefoon, email);
-  if (contactId) {
+  // Create contact and link it to lead
+  const contactResult = await createContact(mondayKey, naam, telefoon, email, gemeente, adres, enriched.stad_regio);
+  if (contactResult) {
     try {
-      const contactsCol = colMap['contacts'] || colMap['contact'];
-      if (contactsCol) {
+      const connectCol = colMap['contacts'] || colMap['contact'] || Object.values(colMap).find(c => c.type === 'board-relation' || c.type === 'connect_boards');
+      if (connectCol) {
         await mondayQuery(mondayKey, `
           mutation($itemId: ID!, $boardId: ID!, $colId: String!, $val: JSON!) {
             change_column_value(item_id: $itemId, board_id: $boardId, column_id: $colId, value: $val) { id }
           }
-        `, { itemId, boardId, colId: contactsCol.id, val: JSON.stringify({ item_ids: [Number(contactId)] }) });
-        console.log('Contact linked to deal');
+        `, { itemId, boardId, colId: connectCol.id, val: JSON.stringify({ item_ids: [Number(contactResult.contactId)] }) });
+        console.log('Contact linked to lead');
       } else {
-        console.log('No contacts column found in deal board, columns:', Object.keys(colMap));
+        console.log('No connect column found. Columns:', Object.keys(colMap));
       }
     } catch (e) {
       console.error('Contact link failed (non-fatal):', e.message);
     }
   }
 
-  // Attach PDF to Bestanden column
+  // Attach PDF report
   try {
     const pdfBuffer = await generateReportPDF(payload);
     const filename = `rapport-${(adres || gemeente || 'yourdomi').replace(/\s+/g, '-').toLowerCase()}-${today}.pdf`;
-    const fileCol = colMap['bestanden'] || Object.values(colMap).find(c => c.type === 'file');
-    if (!fileCol) throw new Error('No file column found. Available: ' + Object.keys(colMap).join(', '));
-    console.log('Uploading PDF to column:', fileCol.title, '(id:', fileCol.id + ')');
-    await uploadFileToItem(mondayKey, itemId, fileCol.id, filename, pdfBuffer);
-    console.log('PDF attached successfully');
+    const fileCol = colMap['bestanden'] || colMap['files'] || Object.values(colMap).find(c => c.type === 'file');
+    if (!fileCol) {
+      console.log('No file column in Leads board. Available columns:', Object.keys(colMap));
+    } else {
+      console.log('Uploading PDF to column:', fileCol.title, '(id:', fileCol.id + ')');
+      await uploadFileToItem(mondayKey, itemId, fileCol.id, filename, pdfBuffer);
+      console.log('PDF attached successfully');
+    }
   } catch (e) {
     console.error('PDF upload failed (non-fatal):', e.message);
   }
