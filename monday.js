@@ -195,8 +195,22 @@ export async function createMondayLead(apiKey, payload) {
   if (!board) throw new Error('Board "Ongoing Deals" not found in Monday');
   const boardId = board.id;
 
-  // 2. Find or create "Incoming Leads" group
-  const groupId = await findOrCreateGroup(apiKey, boardId, 'Incoming Leads');
+  // 2. Find "New Leads" group — must already exist in the board
+  const groupData = await mondayQuery(apiKey, `
+    query($boardId: [ID!]) {
+      boards(ids: $boardId) { groups { id title } }
+    }
+  `, { boardId: [boardId] });
+
+  const groups = groupData.boards[0]?.groups || [];
+  const group = groups.find(g =>
+    g.title.toLowerCase().includes('new lead') ||
+    g.title.toLowerCase().includes('incoming lead') ||
+    g.title.toLowerCase().includes('new - to be confirmed')
+  ) || groups[0]; // fallback to first group
+
+  if (!group) throw new Error('No group found in Ongoing Deals board');
+  const groupId = group.id;
 
   // 3. Get existing columns
   let colMap = await getBoardColumns(apiKey, boardId);
@@ -249,6 +263,9 @@ export async function createMondayLead(apiKey, payload) {
   if (colMap['extra info'] && extraInfo) cv[colMap['extra info'].id] = { text: extraInfo };
   set('Bron', 'Website — Rentabiliteitsanalyse');
   if (colMap['datum aanvraag']) cv[colMap['datum aanvraag'].id] = { date: today };
+  // Lead source column (status/dropdown in Monday CRM)
+  if (colMap['lead source']) cv[colMap['lead source'].id] = { label: 'Website' };
+  if (colMap['lead_source']) cv[colMap['lead_source'].id] = { label: 'Website' };
 
   // Map existing board columns
   if (colMap['aantal kamers'] && kamers)    cv[colMap['aantal kamers'].id] = Number(kamers);
