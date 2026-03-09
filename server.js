@@ -42,15 +42,16 @@ app.post('/api/analyze', async (req, res) => {
 
 // Monday CRM lead endpoint
 app.post('/api/create-monday-lead', async (req, res) => {
-  const apiKey = process.env.MONDAY_API_KEY;
+  const mondayKey = process.env.MONDAY_API_KEY;
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
 
-  if (!apiKey) {
+  if (!mondayKey) {
     console.log('MONDAY_API_KEY not set — skipping');
     return res.status(200).json({ ok: true, warning: 'Monday API key not configured' });
   }
 
   try {
-    const itemId = await createMondayLead(apiKey, req.body);
+    const itemId = await createMondayLead(mondayKey, anthropicKey, req.body);
     console.log('Monday lead created:', itemId);
     return res.status(200).json({ ok: true, itemId });
   } catch (e) {
