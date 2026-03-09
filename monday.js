@@ -155,11 +155,11 @@ export async function generateReportPDF(payload) {
   });
 }
 
-async function uploadFileToItem(apiKey, itemId, filename, buffer) {
+async function uploadFileToItem(apiKey, itemId, columnId, filename, buffer) {
   const FormData = (await import('form-data')).default;
   const form = new FormData();
   form.append('query', `mutation($file: File!) {
-    add_file_to_column(item_id: ${itemId}, column_id: "files", file: $file) { id }
+    add_file_to_column(item_id: ${itemId}, column_id: "${columnId}", file: $file) { id }
   }`);
   form.append('variables[file]', buffer, { filename, contentType: 'application/pdf' });
   const res = await fetch(MONDAY_FILE_API, {
@@ -238,8 +238,13 @@ export async function createMondayLead(mondayKey, anthropicKey, payload) {
   const setLabel = (t, v) => { const c = colMap[t.toLowerCase()]; if (c && v) cv[c.id] = { label: String(v) }; };
   const setLong  = (t, v) => { const c = colMap[t.toLowerCase()]; if (c && v) cv[c.id] = { text: String(v) }; };
 
-  if (colMap['e-mail'] && email)      cv[colMap['e-mail'].id] = { email, text: email };
-  if (colMap['telefoon'] && telefoon) cv[colMap['telefoon'].id] = { phone: telefoon, countryShortName: 'BE' };
+  // Email — try both Dutch and English column names
+  const emailCol = colMap['e-mail'] || colMap['email'];
+  if (emailCol && email) cv[emailCol.id] = { email, text: email };
+
+  // Phone — try both Dutch and English column names
+  const phoneCol = colMap['telefoon'] || colMap['phone'];
+  if (phoneCol && telefoon) cv[phoneCol.id] = { phone: telefoon, countryShortName: 'BE' };
 
   setText('Adres', adres);
   setText('Gemeente', enriched.stad_regio || gemeente);
@@ -253,7 +258,7 @@ export async function createMondayLead(mondayKey, anthropicKey, payload) {
   if (colMap['lead source'])    cv[colMap['lead source'].id]    = { label: 'Website' };
   if (colMap['aantal kamers'] && kamers) cv[colMap['aantal kamers'].id] = Number(kamers);
   if (colMap['type'])   setLabel('Type', 'Beheer');
-  if (colMap['stage'])  setLabel('Stage', 'New — Website Lead');
+  if (colMap['stage'])  setLabel('Stage', 'New / Meeting Planned');
   if (enriched.verwachte_commissie && colMap['commission'])
     cv[colMap['commission'].id] = Number(enriched.verwachte_commissie);
 
@@ -278,8 +283,10 @@ export async function createMondayLead(mondayKey, anthropicKey, payload) {
   try {
     const pdfBuffer = await generateReportPDF(payload);
     const filename = `rapport-${(adres || gemeente || 'yourdomi').replace(/\s+/g, '-').toLowerCase()}-${today}.pdf`;
-    await uploadFileToItem(mondayKey, itemId, filename, pdfBuffer);
-    console.log('PDF attached');
+    const bestandenCol = colMap['bestanden'];
+    const fileColId = bestandenCol?.id || 'files';
+    await uploadFileToItem(mondayKey, itemId, fileColId, filename, pdfBuffer);
+    console.log('PDF attached to column:', fileColId);
   } catch (e) {
     console.error('PDF upload failed (non-fatal):', e.message);
   }
