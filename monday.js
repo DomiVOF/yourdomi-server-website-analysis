@@ -211,6 +211,16 @@ export async function createMondayLead(mondayKey, anthropicKey, payload) {
   const leadSourceCol = colMap['lead source'] || colMap['bron'];
   if (leadSourceCol) cv[leadSourceCol.id] = { label: 'Website' };
 
+  // Name, Email, Phone directly on the lead
+  const nameCol = colMap['name'] || colMap['naam'];
+  if (nameCol && naam) cv[nameCol.id] = String(naam);
+
+  const emailCol = colMap['email'] || colMap['e-mail'];
+  if (emailCol && email) cv[emailCol.id] = { email, text: email };
+
+  const phoneCol = colMap['phone'] || colMap['telefoon'];
+  if (phoneCol && telefoon) cv[phoneCol.id] = { phone: telefoon, countryShortName: 'BE' };
+
   // AI notes
   setLong('ai notities', enriched.notities);
   setText('adres', adres);
@@ -255,7 +265,7 @@ export async function createMondayLead(mondayKey, anthropicKey, payload) {
   try {
     const pdfBuffer = await generateReportPDF(payload);
     const filename = `rapport-${(adres || gemeente || 'yourdomi').replace(/\s+/g, '-').toLowerCase()}-${today}.pdf`;
-    const fileCol = colMap['bestanden'] || colMap['files'] || Object.values(colMap).find(c => c.type === 'file');
+    const fileCol = colMap['files'] || colMap['bestanden'] || colMap['file'] || Object.values(colMap).find(c => c.type === 'file');
     if (!fileCol) {
       console.log('No file column in Leads board. Available columns:', Object.keys(colMap));
     } else {
