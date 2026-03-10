@@ -36,6 +36,7 @@ export async function uploadPDFToDrive(pdfBuffer, filename) {
     requestBody: fileMetadata,
     media,
     fields: 'id, name, webViewLink',
+    supportsAllDrives: true,   // required for Shared Drives
   });
 
   const fileId = uploaded.data.id;
@@ -48,6 +49,7 @@ export async function uploadPDFToDrive(pdfBuffer, filename) {
       role: 'reader',
       type: 'anyone',
     },
+    supportsAllDrives: true,   // required for Shared Drives
   });
 
   const link = `https://drive.google.com/file/d/${fileId}/view`;
