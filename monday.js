@@ -1,4 +1,5 @@
 import PDFDocument from 'pdfkit';
+import { uploadPDFToDrive } from './drive.js';
 
 const MONDAY_API = 'https://api.monday.com/v2';
 const MONDAY_FILE_API = 'https://api.monday.com/v2/file';
@@ -262,6 +263,10 @@ export async function createMondayLead(mondayKey, anthropicKey, payload) {
   const gemeenteCol = colMap['hoofdgemeente'] || colMap['gemeente'];
   if (gemeenteCol) cv[gemeenteCol.id] = String(enriched.stad_regio || gemeente || '');
 
+  // Last interaction = today
+  const lastInteractionCol = colMap['last interaction'] || colMap['laatste interactie'];
+  if (lastInteractionCol) cv[lastInteractionCol.id] = { date: today };
+
   // Item name = Claude deal name or fallback
   const itemName = enriched.deal_naam || `${naam || 'Lead'} — ${adres || gemeente || ''}`.trim();
 
@@ -295,22 +300,28 @@ export async function createMondayLead(mondayKey, anthropicKey, payload) {
     }
   }
 
-  // Attach PDF report
+  // Generate PDF, upload to Google Drive, add link to Monday
   try {
     const pdfBuffer = await generateReportPDF(payload);
     const filename = `rapport-${(adres || gemeente || 'yourdomi').replace(/\s+/g, '-').toLowerCase()}-${today}.pdf`;
-    // Find file column — log all columns to help debug
-    console.log('All columns for file lookup:', Object.entries(colMap).map(([k,v]) => k + '(' + v.type + ')').join(', '));
-    const fileCol = colMap['files'] || colMap['bestanden'] || colMap['file'] || Object.values(colMap).find(c => c.type === 'file');
-    if (!fileCol) {
-      console.log('No file column in Leads board. Available columns:', Object.keys(colMap));
+
+    const driveLink = await uploadPDFToDrive(pdfBuffer, filename);
+
+    // Put the Drive link in a URL/link column — try common column names
+    const linkCol = colMap['rapport'] || colMap['rapport link'] || colMap['link'] || colMap['website'] || colMap['drive'];
+    if (linkCol) {
+      await mondayQuery(mondayKey, `
+        mutation($itemId: ID!, $boardId: ID!, $colId: String!, $val: JSON!) {
+          change_column_value(item_id: $itemId, board_id: $boardId, column_id: $colId, value: $val) { id }
+        }
+      `, { itemId, boardId, colId: linkCol.id, val: JSON.stringify({ url: driveLink, text: 'Rapport bekijken' }) });
+      console.log('Drive link saved to Monday column:', linkCol.title);
     } else {
-      console.log('Uploading PDF to column:', fileCol.title, '(id:', fileCol.id + ')');
-      await uploadFileToItem(mondayKey, itemId, fileCol.id, filename, pdfBuffer);
-      console.log('PDF attached successfully');
+      console.log('No link column found — Drive link:', driveLink);
+      console.log('Available columns:', Object.keys(colMap).join(', '));
     }
   } catch (e) {
-    console.error('PDF upload failed (non-fatal):', e.message);
+    console.error('PDF/Drive upload failed (non-fatal):', e.message);
   }
 
   return itemId;

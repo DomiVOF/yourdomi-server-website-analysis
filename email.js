@@ -3,7 +3,7 @@ import { generateReportPDF } from './monday.js';
 export async function sendReportToLead(resendKey, payload) {
   if (!resendKey) { console.log('RESEND_API_KEY not set — skipping lead email'); return; }
 
-  const { naam, email, adres, gemeente, scenarios, jaar1Total, jaar2Total, reportDate } = payload;
+  const { naam, email, adres, gemeente, type, kamers, slaapplaatsen, scenarios, jaar1Total, jaar2Total, reportDate } = payload;
   if (!email) { console.log('No email address — skipping lead email'); return; }
 
   const voornaam = naam?.split(' ')[0] || 'eigenaar';
