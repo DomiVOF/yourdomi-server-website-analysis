@@ -212,8 +212,9 @@ async function createContact(apiKey, naam, telefoon, email, gemeente, adres, sta
 export async function createMondayLead(mondayKey, anthropicKey, payload) {
   const { naam, email, telefoon, adres, gemeente, type, kamers, slaapplaatsen, startmaand, extraInfo, datum, scenarios, jaar1Total, jaar2Total } = payload;
 
-  // Use explicit MONDAY_LEADS_BOARD_ID if set, otherwise search by name
+  // YourDomi Leads board: https://yourdomi.monday.com/boards/5092514215
   const boardId = process.env.MONDAY_LEADS_BOARD_ID
+    || '5092514215'
     || await findBoardByName(mondayKey, 'lead').then(b => b?.id);
 
   if (!boardId) throw new Error('No Leads board found. Set MONDAY_LEADS_BOARD_ID env var in Railway.');
@@ -238,7 +239,7 @@ export async function createMondayLead(mondayKey, anthropicKey, payload) {
   const setLong  = (t, v) => { const c = colMap[t.toLowerCase()]; if (c && v) cv[c.id] = { text: String(v) }; };
   const setText  = (t, v) => { const c = colMap[t.toLowerCase()]; if (c && v) cv[c.id] = String(v); };
 
-  // Status = New Lead
+  // Status = New Lead (Leads board 5092514215)
   const statusCol = colMap['status'];
   if (statusCol) cv[statusCol.id] = { label: 'New Lead' };
 
