@@ -1,10 +1,38 @@
+import crypto from 'crypto';
 import { generateReportPDF } from './monday.js';
+
+// Dedupe: only send one email per same report (same email + content) within this window
+const DEDUPE_WINDOW_MS = 2 * 60 * 1000; // 2 minutes
+const sentFingerprints = new Map(); // fingerprint -> expiry time
+
+// Fingerprint ignores adres/gemeente so two requests (e.g. one with city, one with full address) count as the same report → one email
+function fingerprint(payload) {
+  const { email, naam, jaar1Total, jaar2Total, scenarios } = payload;
+  return crypto.createHash('sha256').update(JSON.stringify({ email, naam, jaar1Total, jaar2Total, scenarios })).digest('hex');
+}
+
+function wasRecentlySent(fp) {
+  const expiry = sentFingerprints.get(fp);
+  if (!expiry) return false;
+  if (Date.now() > expiry) {
+    sentFingerprints.delete(fp);
+    return false;
+  }
+  return true;
+}
 
 export async function sendReportToLead(resendKey, payload) {
   if (!resendKey) { console.log('RESEND_API_KEY not set — skipping lead email'); return; }
 
   const { naam, email, adres, gemeente, type, kamers, slaapplaatsen, scenarios, jaar1Total, jaar2Total, reportDate } = payload;
   if (!email) { console.log('No email address — skipping lead email'); return; }
+
+  const fp = fingerprint(payload);
+  if (wasRecentlySent(fp)) {
+    console.log('Lead email skipped (duplicate request):', email);
+    return;
+  }
+  sentFingerprints.set(fp, Date.now() + DEDUPE_WINDOW_MS);
 
   const voornaam = naam?.split(' ')[0] || 'eigenaar';
   const type_info = [type, kamers ? `${kamers} slaapkamer${kamers > 1 ? 's' : ''}` : null, slaapplaatsen ? `${slaapplaatsen} slaapplaatsen` : null].filter(Boolean).join(' · ');
@@ -15,7 +43,7 @@ export async function sendReportToLead(resendKey, payload) {
   const fase1 = `Conservatieve pricing om momentum op te bouwen. Verwachte omzet: €${scenarios?.conservatief?.maand?.toLocaleString('nl-BE') || '—'}/maand`;
   const fase2 = `Optimalisatie voor seizoenspieken, uitbreiden naar internationale gasten. Verwachte omzet: €${scenarios?.realistisch?.maand?.toLocaleString('nl-BE') || '—'}/maand`;
   const fase3 = `Premium positionering en dynamische pricing op basis van marktdata. Verwachte omzet: €${scenarios?.optimaal?.maand?.toLocaleString('nl-BE') || '—'}/maand`;
-  const locatie = adres || gemeente || 'uw eigendom';
+  const locatie = [adres, gemeente].filter(Boolean).join(', ') || 'uw eigendom';
   const realistisch = scenarios?.realistisch?.maand?.toLocaleString('nl-BE') || '—';
   const jaar1 = jaar1Total ? Number(jaar1Total).toLocaleString('nl-BE') : '—';
   const datum = reportDate || new Date().toLocaleDateString('nl-BE');
