@@ -53,3 +53,28 @@ export async function sendReportToLead(resendKey, payload) {
     console.error('Lead email failed (non-fatal):', e.message);
   }
 }
+
+// Send email with a pre-built PDF buffer (from frontend capture)
+export async function sendReportToLeadWithPDF(resendKey, { naam, email }, pdfBuffer) {
+  if (!resendKey || !email) return;
+  const voornaam = naam?.split(' ')[0] || 'eigenaar';
+  const today = new Date().toLocaleDateString('nl-BE');
+
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${resendKey}` },
+    body: JSON.stringify({
+      from: 'YourDomi <hello@yourdomi.be>',
+      to: [email],
+      subject: `Uw rentabiliteitsanalyse — YourDomi`,
+      html: `<p>Beste ${voornaam},</p><p>In bijlage vindt u uw persoonlijk rentabiliteitsrapport.</p><p>Met vriendelijke groet,<br><strong>Het YourDomi team</strong></p>`,
+      attachments: [{
+        filename: `yourdomi-rapport-${today.replace(/\//g,'-')}.pdf`,
+        content: pdfBuffer.toString('base64')
+      }]
+    })
+  });
+  const data = await res.json();
+  if (data.id) console.log('Email with PDF sent:', data.id, '->', email);
+  else console.error('Resend error:', JSON.stringify(data));
+}

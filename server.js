@@ -47,28 +47,72 @@ app.post('/api/create-monday-lead', async (req, res) => {
   const resendKey  = process.env.RESEND_API_KEY;
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
 
-  // Respond immediately so frontend isn't blocked
-  res.status(200).json({ ok: true });
-
-  // Run Monday CRM and lead email in parallel (fire and forget)
-  const tasks = [];
-
+  // Run Monday CRM first to get itemId, then fire email
+  let itemId = null;
   if (mondayKey) {
-    tasks.push(
-      createMondayLead(mondayKey, anthropicKey, req.body)
-        .then(id => console.log('Monday lead created:', id))
-        .catch(e => console.error('Monday error:', e.message))
-    );
+    try {
+      itemId = await createMondayLead(mondayKey, anthropicKey, req.body);
+      console.log('Monday lead created:', itemId);
+    } catch(e) {
+      console.error('Monday error:', e.message);
+    }
   } else {
     console.log('MONDAY_API_KEY not set — skipping CRM');
   }
 
-  tasks.push(
-    sendReportToLead(resendKey, req.body)
-      .catch(e => console.error('Email error:', e.message))
-  );
+  // Respond with itemId so frontend can send PDF after render
+  res.status(200).json({ ok: true, itemId });
 
-  await Promise.allSettled(tasks);
+  // Email is sent via /api/attach-report-pdf (with actual rendered PDF)
+});
+
+// Receive rendered PDF from frontend, upload to Drive, update Monday, send email with PDF
+app.post('/api/attach-report-pdf', async (req, res) => {
+  res.status(200).json({ ok: true }); // respond immediately
+
+  const { itemId, pdfBase64, naam, email, payload } = req.body;
+  if (!pdfBase64) { console.log('No PDF received'); return; }
+
+  const pdfBuffer = Buffer.from(pdfBase64, 'base64');
+  const mondayKey = process.env.MONDAY_API_KEY;
+  const resendKey = process.env.RESEND_API_KEY;
+  const boardId = process.env.MONDAY_LEADS_BOARD_ID || process.env.MONDAY_BOARD_ID;
+  const today = new Date().toISOString().split('T')[0];
+  const gemeente = payload?.gemeente || payload?.adres || 'yourdomi';
+  const filename = `rapport-${gemeente.replace(/\s+/g, '-').toLowerCase()}-${today}.pdf`;
+
+  // 1. Upload to Drive (non-fatal)
+  let driveLink = null;
+  try {
+    const { uploadPDFToDrive } = await import('./drive.js');
+    driveLink = await uploadPDFToDrive(pdfBuffer, filename);
+    console.log('Drive link:', driveLink);
+  } catch(e) {
+    console.error('Drive upload failed (non-fatal):', e.message);
+  }
+
+  // 2. Update Monday item with Drive link (non-fatal)
+  if (driveLink && mondayKey && itemId && boardId) {
+    try {
+      const { updateItemLink } = await import('./monday.js');
+      await updateItemLink(mondayKey, boardId, itemId, driveLink);
+      console.log('Monday link updated for item:', itemId);
+    } catch(e) {
+      console.error('Monday link update failed (non-fatal):', e.message);
+    }
+  }
+
+  // 3. Send email with PDF — always runs regardless of Drive/Monday status
+  if (resendKey && email) {
+    try {
+      const { sendReportToLeadWithPDF } = await import('./email.js');
+      await sendReportToLeadWithPDF(resendKey, { naam, email, payload }, pdfBuffer);
+    } catch(e) {
+      console.error('Email with PDF failed:', e.message);
+    }
+  } else {
+    console.log('Email skipped — resendKey:', !!resendKey, 'email:', email);
+  }
 });
 
 app.listen(PORT, () => {

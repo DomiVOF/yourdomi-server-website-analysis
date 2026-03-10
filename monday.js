@@ -300,29 +300,22 @@ export async function createMondayLead(mondayKey, anthropicKey, payload) {
     }
   }
 
-  // Generate PDF, upload to Google Drive, add link to Monday
-  try {
-    const pdfBuffer = await generateReportPDF(payload);
-    const filename = `rapport-${(adres || gemeente || 'yourdomi').replace(/\s+/g, '-').toLowerCase()}-${today}.pdf`;
+  // PDF captured + uploaded by /api/attach-report-pdf after frontend renders
 
-    const driveLink = await uploadPDFToDrive(pdfBuffer, filename);
+}
 
-    // Put the Drive link in a URL/link column — try common column names
-    const linkCol = colMap['rapport'] || colMap['rapport link'] || colMap['link'] || colMap['website'] || colMap['drive'];
-    if (linkCol) {
-      await mondayQuery(mondayKey, `
-        mutation($itemId: ID!, $boardId: ID!, $colId: String!, $val: JSON!) {
-          change_column_value(item_id: $itemId, board_id: $boardId, column_id: $colId, value: $val) { id }
-        }
-      `, { itemId, boardId, colId: linkCol.id, val: JSON.stringify({ url: driveLink, text: 'Rapport bekijken' }) });
-      console.log('Drive link saved to Monday column:', linkCol.title);
-    } else {
-      console.log('No link column found — Drive link:', driveLink);
-      console.log('Available columns:', Object.keys(colMap).join(', '));
-    }
-  } catch (e) {
-    console.error('PDF/Drive upload failed (non-fatal):', e.message);
+// Update an existing item's website/link column with a Drive URL
+export async function updateItemLink(apiKey, boardId, itemId, driveLink) {
+  const colMap = await getBoardColumns(apiKey, boardId);
+  const linkCol = colMap['website'] || colMap['rapport'] || colMap['link'] || colMap['rapport link'];
+  if (!linkCol) {
+    console.log('No link column found. Available:', Object.keys(colMap).join(', '));
+    return;
   }
-
-  return itemId;
+  await mondayQuery(apiKey, `
+    mutation($itemId: ID!, $boardId: ID!, $colId: String!, $val: JSON!) {
+      change_column_value(item_id: $itemId, board_id: $boardId, column_id: $colId, value: $val) { id }
+    }
+  `, { itemId, boardId, colId: linkCol.id, val: JSON.stringify({ url: driveLink, text: 'Rapport bekijken' }) });
+  console.log('Drive link updated in Monday column:', linkCol.title);
 }
