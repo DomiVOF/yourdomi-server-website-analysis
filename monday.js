@@ -300,22 +300,30 @@ export async function createMondayLead(mondayKey, anthropicKey, payload) {
     }
   }
 
-  // PDF captured + uploaded by /api/attach-report-pdf after frontend renders
+  // Generate PDF, upload to Google Drive, add link to Monday
+  try {
+    // Use PDF from frontend if provided, otherwise fall back to server-side generation
+    const pdfBuffer = payload.pdfBase64 ? Buffer.from(payload.pdfBase64, 'base64') : await generateReportPDF(payload);
+    const filename = `rapport-${(adres || gemeente || 'yourdomi').replace(/\s+/g, '-').toLowerCase()}-${today}.pdf`;
 
-}
+    const driveLink = await uploadPDFToDrive(pdfBuffer, filename);
 
-// Update an existing item's website/link column with a Drive URL
-export async function updateItemLink(apiKey, boardId, itemId, driveLink) {
-  const colMap = await getBoardColumns(apiKey, boardId);
-  const linkCol = colMap['website'] || colMap['rapport'] || colMap['link'] || colMap['rapport link'];
-  if (!linkCol) {
-    console.log('No link column found. Available:', Object.keys(colMap).join(', '));
-    return;
-  }
-  await mondayQuery(apiKey, `
-    mutation($itemId: ID!, $boardId: ID!, $colId: String!, $val: JSON!) {
-      change_column_value(item_id: $itemId, board_id: $boardId, column_id: $colId, value: $val) { id }
+    // Put the Drive link in a URL/link column — try common column names
+    const linkCol = colMap['rapport'] || colMap['rapport link'] || colMap['link'] || colMap['website'] || colMap['drive'];
+    if (linkCol) {
+      await mondayQuery(mondayKey, `
+        mutation($itemId: ID!, $boardId: ID!, $colId: String!, $val: JSON!) {
+          change_column_value(item_id: $itemId, board_id: $boardId, column_id: $colId, value: $val) { id }
+        }
+      `, { itemId, boardId, colId: linkCol.id, val: JSON.stringify({ url: driveLink, text: 'Rapport bekijken' }) });
+      console.log('Drive link saved to Monday column:', linkCol.title);
+    } else {
+      console.log('No link column found — Drive link:', driveLink);
+      console.log('Available columns:', Object.keys(colMap).join(', '));
     }
-  `, { itemId, boardId, colId: linkCol.id, val: JSON.stringify({ url: driveLink, text: 'Rapport bekijken' }) });
-  console.log('Drive link updated in Monday column:', linkCol.title);
+  } catch (e) {
+    console.error('PDF/Drive upload failed (non-fatal):', e.message, e.stack);
+  }
+
+  return itemId;
 }
