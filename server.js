@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import { createMondayLead } from './monday.js';
+import { sendReportToLead } from './email.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -40,24 +41,34 @@ app.post('/api/analyze', async (req, res) => {
   }
 });
 
-// Monday CRM lead endpoint
+// Monday CRM + lead email endpoint
 app.post('/api/create-monday-lead', async (req, res) => {
-  const mondayKey = process.env.MONDAY_API_KEY;
+  const mondayKey  = process.env.MONDAY_API_KEY;
+  const resendKey  = process.env.RESEND_API_KEY;
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
 
-  if (!mondayKey) {
-    console.log('MONDAY_API_KEY not set — skipping');
-    return res.status(200).json({ ok: true, warning: 'Monday API key not configured' });
+  // Respond immediately so frontend isn't blocked
+  res.status(200).json({ ok: true });
+
+  // Run Monday CRM and lead email in parallel (fire and forget)
+  const tasks = [];
+
+  if (mondayKey) {
+    tasks.push(
+      createMondayLead(mondayKey, anthropicKey, req.body)
+        .then(id => console.log('Monday lead created:', id))
+        .catch(e => console.error('Monday error:', e.message))
+    );
+  } else {
+    console.log('MONDAY_API_KEY not set — skipping CRM');
   }
 
-  try {
-    const itemId = await createMondayLead(mondayKey, anthropicKey, req.body);
-    console.log('Monday lead created:', itemId);
-    return res.status(200).json({ ok: true, itemId });
-  } catch (e) {
-    console.error('Monday error:', e.message);
-    return res.status(200).json({ ok: true, warning: e.message });
-  }
+  tasks.push(
+    sendReportToLead(resendKey, req.body)
+      .catch(e => console.error('Email error:', e.message))
+  );
+
+  await Promise.allSettled(tasks);
 });
 
 app.listen(PORT, () => {

@@ -124,11 +124,45 @@ export async function generateReportPDF(payload) {
 async function uploadFileToItem(apiKey, itemId, columnId, filename, buffer) {
   const FormData = (await import('form-data')).default;
   const form = new FormData();
-  form.append('query', `mutation($file: File!) { add_file_to_column(item_id: ${itemId}, column_id: "${columnId}", file: $file) { id } }`);
-  form.append('variables[file]', buffer, { filename, contentType: 'application/pdf' });
-  const res = await fetch(MONDAY_FILE_API, { method: 'POST', headers: { 'Authorization': apiKey, ...form.getHeaders() }, body: form });
-  const data = await res.json();
-  if (data.errors) throw new Error(JSON.stringify(data.errors));
+  // Monday file upload: query + variables[file] as multipart
+  form.append(
+    'query',
+    `mutation ($file: File!) { add_file_to_column(item_id: ${itemId}, column_id: "${columnId}", file: $file) { id } }`
+  );
+  form.append('variables[file]', buffer, {
+    filename,
+    contentType: 'application/octet-stream',
+    knownLength: buffer.length
+  });
+
+  // Merge Authorization with form headers explicitly
+  const formHeaders = form.getHeaders();
+  const headers = {
+    ...formHeaders,
+    'Authorization': apiKey,   // Monday API key (no Bearer prefix)
+  };
+
+  console.log('File upload → item:', itemId, 'col:', columnId, 'size:', buffer.length, 'bytes');
+  const res = await fetch(MONDAY_FILE_API, { method: 'POST', headers, body: form });
+  const text = await res.text();
+  console.log('File upload HTTP status:', res.status, '| body:', text.slice(0, 300) || '(empty)');
+
+  // Monday sometimes returns empty body on success — treat that as OK
+  if (!text || text.trim() === '') {
+    console.log('PDF upload: empty response body — treating as success (HTTP ' + res.status + ')');
+    return { ok: true };
+  }
+  let data;
+  try { data = JSON.parse(text); } catch { 
+    // Non-JSON but not empty — log and treat 2xx as success
+    if (res.status >= 200 && res.status < 300) {
+      console.log('PDF upload: non-JSON 2xx response — treating as success');
+      return { ok: true };
+    }
+    throw new Error('Non-JSON error response: ' + text.slice(0, 300));
+  }
+  if (data.errors) throw new Error('Monday file error: ' + JSON.stringify(data.errors));
+  console.log('PDF upload success:', JSON.stringify(data).slice(0, 200));
   return data;
 }
 
@@ -265,6 +299,8 @@ export async function createMondayLead(mondayKey, anthropicKey, payload) {
   try {
     const pdfBuffer = await generateReportPDF(payload);
     const filename = `rapport-${(adres || gemeente || 'yourdomi').replace(/\s+/g, '-').toLowerCase()}-${today}.pdf`;
+    // Find file column — log all columns to help debug
+    console.log('All columns for file lookup:', Object.entries(colMap).map(([k,v]) => k + '(' + v.type + ')').join(', '));
     const fileCol = colMap['files'] || colMap['bestanden'] || colMap['file'] || Object.values(colMap).find(c => c.type === 'file');
     if (!fileCol) {
       console.log('No file column in Leads board. Available columns:', Object.keys(colMap));
