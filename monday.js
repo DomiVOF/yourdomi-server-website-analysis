@@ -242,9 +242,7 @@ export async function createMondayLead(mondayKey, anthropicKey, payload) {
   const statusCol = colMap['status'];
   if (statusCol) cv[statusCol.id] = { label: 'New Lead' };
 
-  // Lead source = Website
-  const leadSourceCol = colMap['lead source'] || colMap['bron'];
-  if (leadSourceCol) cv[leadSourceCol.id] = { label: 'Website' };
+  // Lead source handled below
 
   // Name, Email, Phone directly on the lead
   const nameCol = colMap['name'] || colMap['naam'];
@@ -256,16 +254,35 @@ export async function createMondayLead(mondayKey, anthropicKey, payload) {
   const phoneCol = colMap['phone'] || colMap['telefoon'];
   if (phoneCol && telefoon) cv[phoneCol.id] = { phone: telefoon, countryShortName: 'BE' };
 
-  // AI notes
-  setLong('ai notities', enriched.notities);
+  // Address fields
   setText('adres', adres);
 
-  const gemeenteCol = colMap['hoofdgemeente'] || colMap['gemeente'];
+  const gemeenteCol = colMap['gemeente'] || colMap['hoofdgemeente'];
   if (gemeenteCol) cv[gemeenteCol.id] = String(enriched.stad_regio || gemeente || '');
 
-  // Last interaction = today
-  const lastInteractionCol = colMap['last interaction'] || colMap['laatste interactie'];
-  if (lastInteractionCol) cv[lastInteractionCol.id] = { date: today };
+  // Property details
+  const typePandCol = colMap['type pand'] || colMap['type'];
+  if (typePandCol && type) cv[typePandCol.id] = String(type);
+
+  const slaapkamersCol = colMap['slaapkamers'] || colMap['kamers'];
+  if (slaapkamersCol && kamers) cv[slaapkamersCol.id] = String(kamers);
+
+  const slaapplaatsenCol = colMap['slaapplaatsen'];
+  if (slaapplaatsenCol && slaapplaatsen) cv[slaapplaatsenCol.id] = String(slaapplaatsen);
+
+  const startmaandCol = colMap['startmaand'];
+  if (startmaandCol && startmaand) cv[startmaandCol.id] = String(startmaand);
+
+  const extraInfoCol = colMap['extra info'] || colMap['extra informatie'];
+  if (extraInfoCol && extraInfo) cv[extraInfoCol.id] = String(extraInfo);
+
+  // Lead source
+  const leadSourceCol = colMap['bron'] || colMap['lead source'];
+  if (leadSourceCol) cv[leadSourceCol.id] = { label: 'Website' };
+
+  // Date
+  const datumCol = colMap['datum aanvraag'] || colMap['last interaction'] || colMap['laatste interactie'];
+  if (datumCol) cv[datumCol.id] = { date: today };
 
   // Item name = Claude deal name or fallback
   const itemName = enriched.deal_naam || `${naam || 'Lead'} — ${adres || gemeente || ''}`.trim();
@@ -311,12 +328,26 @@ export async function createMondayLead(mondayKey, anthropicKey, payload) {
     // Put the Drive link in a URL/link column — try common column names
     const linkCol = colMap['rapport'] || colMap['rapport link'] || colMap['link'] || colMap['website'] || colMap['drive'];
     if (linkCol) {
-      await mondayQuery(mondayKey, `
-        mutation($itemId: ID!, $boardId: ID!, $colId: String!, $val: JSON!) {
-          change_column_value(item_id: $itemId, board_id: $boardId, column_id: $colId, value: $val) { id }
-        }
-      `, { itemId, boardId, colId: linkCol.id, val: JSON.stringify({ url: driveLink, text: 'Rapport bekijken' }) });
-      console.log('Drive link saved to Monday column:', linkCol.title);
+      console.log('Saving Drive link to column:', linkCol.title, '| type:', linkCol.type, '| id:', linkCol.id);
+      // Monday link columns accept { url, text } as JSON string
+      // Try the standard link format
+      try {
+        await mondayQuery(mondayKey, `
+          mutation($itemId: ID!, $boardId: ID!, $colId: String!, $val: JSON!) {
+            change_column_value(item_id: $itemId, board_id: $boardId, column_id: $colId, value: $val) { id }
+          }
+        `, { itemId, boardId, colId: linkCol.id, val: JSON.stringify({ url: driveLink, text: 'Rapport bekijken' }) });
+        console.log('Drive link saved to Monday column:', linkCol.title);
+      } catch (linkErr) {
+        console.error('Link column format failed, trying text format:', linkErr.message);
+        // Fallback: try as plain text
+        await mondayQuery(mondayKey, `
+          mutation($itemId: ID!, $boardId: ID!, $colId: String!, $val: JSON!) {
+            change_column_value(item_id: $itemId, board_id: $boardId, column_id: $colId, value: $val) { id }
+          }
+        `, { itemId, boardId, colId: linkCol.id, val: JSON.stringify(driveLink) });
+        console.log('Drive link saved as text to Monday column:', linkCol.title);
+      }
     } else {
       console.log('No link column found — Drive link:', driveLink);
       console.log('Available columns:', Object.keys(colMap).join(', '));
